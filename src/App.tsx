@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react'
 import './App.css'
 
 type SourceType = 'url' | 'note' | 'transcript' | 'document'
+type ClaimType = 'opportunity' | 'risk' | 'assumption' | 'unknown'
 type Confidence = 'high' | 'medium' | 'low'
 type PacketRole = 'Coder' | 'Researcher' | 'Writer' | 'Notion'
+type Horizon = '24h' | '7d' | '30d'
 
 type SourceItem = {
   id: string
@@ -14,18 +16,27 @@ type SourceItem = {
 
 type Claim = {
   text: string
-  type: 'opportunity' | 'risk' | 'assumption' | 'unknown'
+  type: ClaimType
   confidence: Confidence
+  confidenceScore: number
   sourceId: string
 }
 
 type Decision = {
   title: string
+  rationale: string
   impact: number
   effort: number
   urgency: number
   score: number
-  horizon: '24h' | '7d' | '30d'
+  horizon: Horizon
+}
+
+type RoadmapItem = {
+  horizon: Horizon
+  action: string
+  owner: string
+  successMetric: string
 }
 
 type Packet = {
@@ -44,6 +55,15 @@ type SavedSession = {
 
 const SESSION_KEY = 'signaldesk:sessions:v1'
 
+const SIGNALS = {
+  opportunity: ['launch', 'growth', 'demand', 'adoption', 'win', 'expand', 'retention', 'upsell', 'pipeline'],
+  risk: ['risk', 'decline', 'churn', 'cost', 'delay', 'blocked', 'incident', 'burn', 'friction', 'drop'],
+  assumption: ['assume', 'likely', 'should', 'expect', 'hypothesis', 'probably'],
+  unknown: ['unknown', 'tbd', 'unclear', 'missing', 'need data', '?'],
+  evidence: ['data', 'confirmed', 'published', 'survey', 'metric', 'evidence', 'reported'],
+  weakSignal: ['maybe', 'possibly', 'guess', 'perhaps', 'rumor'],
+}
+
 function safeUrl(raw: string) {
   try {
     new URL(raw)
@@ -56,8 +76,8 @@ function safeUrl(raw: string) {
 function classify(raw: string): SourceType {
   const lower = raw.toLowerCase()
   if (/^https?:\/\//.test(raw)) return 'url'
-  if (lower.includes('transcript') || lower.includes('speaker:') || lower.split(' ').length > 20) return 'transcript'
-  if (lower.includes('.pdf') || lower.includes('doc') || lower.includes('report')) return 'document'
+  if (lower.includes('transcript') || lower.includes('speaker:') || lower.split(' ').length > 22) return 'transcript'
+  if (lower.includes('.pdf') || lower.includes('doc') || lower.includes('report') || lower.includes('memo')) return 'document'
   return 'note'
 }
 
@@ -73,91 +93,106 @@ function parseSources(input: string): SourceItem[] {
     })
 }
 
-function inferConfidence(raw: string): Confidence {
+function countMatches(raw: string, terms: string[]): number {
   const lower = raw.toLowerCase()
-  if (lower.includes('confirmed') || lower.includes('data') || lower.includes('published')) return 'high'
-  if (lower.includes('maybe') || lower.includes('possibly') || lower.includes('?')) return 'low'
-  return 'medium'
+  return terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0)
 }
 
-function buildClaims(sources: SourceItem[]): Claim[] {
+function scoreConfidence(raw: string, sourceType: SourceType): number {
+  let score = 44
+
+  if (sourceType === 'url') score += 8
+  if (sourceType === 'document') score += 10
+  if (sourceType === 'transcript') score += 4
+
+  score += countMatches(raw, SIGNALS.evidence) * 14
+  score -= countMatches(raw, SIGNALS.weakSignal) * 12
+
+  if (raw.length > 90) score += 6
+  if (raw.includes('?')) score -= 6
+
+  return Math.max(8, Math.min(95, score))
+}
+
+function bucketConfidence(score: number): Confidence {
+  if (score >= 72) return 'high'
+  if (score >= 46) return 'medium'
+  return 'low'
+}
+
+function extractClaimsForSource(source: SourceItem): Claim[] {
+  const text = source.raw
   const claims: Claim[] = []
 
-  for (const source of sources) {
-    const lower = source.raw.toLowerCase()
-
-    if (lower.includes('launch') || lower.includes('growth') || lower.includes('demand') || source.type === 'url') {
-      claims.push({
-        text: `Potential upside from source: ${source.raw.slice(0, 90)}`,
-        type: 'opportunity',
-        confidence: inferConfidence(source.raw),
-        sourceId: source.id,
-      })
-    }
-
-    if (lower.includes('risk') || lower.includes('decline') || lower.includes('cost') || lower.includes('delay')) {
-      claims.push({
-        text: `Risk signal detected: ${source.raw.slice(0, 90)}`,
-        type: 'risk',
-        confidence: inferConfidence(source.raw),
-        sourceId: source.id,
-      })
-    }
-
-    if (lower.includes('assume') || lower.includes('should') || lower.includes('likely')) {
-      claims.push({
-        text: `Assumption to validate: ${source.raw.slice(0, 90)}`,
-        type: 'assumption',
-        confidence: 'low',
-        sourceId: source.id,
-      })
-    }
-
-    if (lower.includes('unknown') || lower.includes('tbd') || lower.includes('unclear') || lower.includes('?')) {
-      claims.push({
-        text: `Unknown requiring evidence: ${source.raw.slice(0, 90)}`,
-        type: 'unknown',
-        confidence: 'low',
-        sourceId: source.id,
-      })
-    }
+  const push = (type: ClaimType, phrase: string) => {
+    const confidenceScore = scoreConfidence(text, source.type)
+    claims.push({
+      type,
+      text: `${phrase}: ${text.slice(0, 120)}`,
+      confidence: bucketConfidence(confidenceScore),
+      confidenceScore,
+      sourceId: source.id,
+    })
   }
 
-  if (!claims.length && sources.length) {
-    claims.push({
-      text: 'Initial signals captured, but more explicit evidence is needed for high-confidence synthesis.',
-      type: 'unknown',
-      confidence: 'low',
-      sourceId: sources[0].id,
-    })
+  const oppHits = countMatches(text, SIGNALS.opportunity)
+  const riskHits = countMatches(text, SIGNALS.risk)
+  const assumptionHits = countMatches(text, SIGNALS.assumption)
+  const unknownHits = countMatches(text, SIGNALS.unknown)
+
+  if (oppHits > 0 || source.type === 'url') push('opportunity', 'Opportunity signal')
+  if (riskHits > 0) push('risk', 'Risk signal')
+  if (assumptionHits > 0) push('assumption', 'Assumption to validate')
+  if (unknownHits > 0) push('unknown', 'Unknown requiring evidence')
+
+  if (!claims.length) {
+    const fallbackType: ClaimType = source.type === 'note' ? 'assumption' : 'unknown'
+    push(fallbackType, 'Context captured but under-specified')
   }
 
   return claims
 }
 
+function buildClaims(sources: SourceItem[]): Claim[] {
+  return sources.flatMap((source) => extractClaimsForSource(source))
+}
+
+function averageConfidenceScore(claims: Claim[]): number {
+  if (!claims.length) return 0
+  return claims.reduce((sum, claim) => sum + claim.confidenceScore, 0) / claims.length
+}
+
 function buildDecisions(claims: Claim[]): Decision[] {
   const opportunities = claims.filter((c) => c.type === 'opportunity').length
   const risks = claims.filter((c) => c.type === 'risk').length
+  const assumptions = claims.filter((c) => c.type === 'assumption').length
   const unknowns = claims.filter((c) => c.type === 'unknown').length
+  const confidenceMean = averageConfidenceScore(claims)
+
+  const confidenceBoost = confidenceMean >= 65 ? 1.2 : 0
+  const confidenceDrag = confidenceMean < 50 ? 1.0 : 0
 
   const rows: Omit<Decision, 'score'>[] = [
     {
-      title: 'Ship one focused experiment tied to strongest opportunity signal',
+      title: 'Run one high-leverage experiment against the strongest upside signal',
+      rationale: `Anchors on ${opportunities} opportunity signals while confidence avg is ${confidenceMean.toFixed(0)}.`,
       impact: Math.min(10, 5 + opportunities),
       effort: 4,
       urgency: 8,
       horizon: '24h',
     },
     {
-      title: 'Run risk sweep and add mitigation owner per critical risk',
+      title: 'Contain downside with owner-assigned mitigation plan',
+      rationale: `${risks} risk signals detected; convert each into mitigation with owner + SLA.`,
       impact: Math.min(10, 4 + risks),
       effort: 5,
       urgency: 7,
       horizon: '7d',
     },
     {
-      title: 'Close unknowns with targeted interviews + data pull',
-      impact: Math.min(10, 4 + unknowns),
+      title: 'Resolve assumptions/unknowns with targeted evidence sprint',
+      rationale: `${assumptions + unknowns} uncertain claims must be validated before larger bets.`,
+      impact: Math.min(10, 4 + assumptions + unknowns),
       effort: 6,
       urgency: 6,
       horizon: '30d',
@@ -165,81 +200,123 @@ function buildDecisions(claims: Claim[]): Decision[] {
   ]
 
   return rows
-    .map((d) => ({ ...d, score: d.impact * 1.7 + d.urgency * 1.2 - d.effort }))
+    .map((d) => ({ ...d, score: d.impact * 1.8 + d.urgency * 1.2 - d.effort + confidenceBoost - confidenceDrag }))
     .sort((a, b) => b.score - a.score)
+}
+
+function buildRoadmap(decisions: Decision[]): RoadmapItem[] {
+  const fallback: RoadmapItem[] = [
+    { horizon: '24h', action: 'Define decision owner + first measurable move', owner: 'Operator', successMetric: 'Owner + KPI documented' },
+    { horizon: '7d', action: 'Run execution sprint and mitigate top risk', owner: 'Cross-functional', successMetric: 'Risk register reduced by 30%' },
+    { horizon: '30d', action: 'Institutionalize learnings into repeatable workflow', owner: 'Leadership', successMetric: 'Strategy cycle time drops week-over-week' },
+  ]
+
+  const map = new Map<Horizon, Decision>()
+  decisions.forEach((decision) => map.set(decision.horizon, decision))
+
+  return (['24h', '7d', '30d'] as const).map((horizon, index) => {
+    const decision = map.get(horizon)
+    if (!decision) return fallback[index]
+
+    return {
+      horizon,
+      action: decision.title,
+      owner: horizon === '24h' ? 'Operator + Coder' : horizon === '7d' ? 'Ops Lead' : 'Strategy Lead',
+      successMetric:
+        horizon === '24h'
+          ? 'First experiment launched with baseline metric'
+          : horizon === '7d'
+            ? 'Mitigation and opportunity progress reviewed with evidence'
+            : 'Validated playbook + next-quarter plan approved',
+    }
+  })
 }
 
 function buildPackets(decisions: Decision[], claims: Claim[]): Packet[] {
   const top = decisions[0]
   const riskLines = claims.filter((c) => c.type === 'risk').slice(0, 3).map((c) => c.text)
+  const unknownLines = claims.filter((c) => c.type === 'unknown').slice(0, 3).map((c) => c.text)
 
   return [
     {
       role: 'Coder',
       objective: top ? top.title : 'Build the highest-impact execution slice.',
       tasks: [
-        'Create implementation plan with milestones (24h/7d).',
-        'Implement metrics hooks for decision outcomes.',
-        'Ship first thin-slice and document assumptions.',
+        'Break top decision into 3 deliverable milestones (24h/7d/30d).',
+        'Add instrumentation hooks for outcome tracking.',
+        'Ship smallest production-usable slice with rollback notes.',
       ],
-      output: 'PR + changelog + measurable success metric.',
+      output: 'PR + release notes + KPI dashboard hook.',
     },
     {
       role: 'Researcher',
-      objective: 'Resolve top unknowns with evidence.',
+      objective: 'Resolve unknowns and de-risk assumptions with evidence.',
       tasks: [
-        'Extract unresolved assumptions from brief.',
-        'Collect 5 validating/disproving data points.',
-        'Summarize confidence changes and recommendation.',
+        `Prioritize unknown queue (${unknownLines.length} active items).`,
+        'Collect 5 corroborating/disproving data points per key claim.',
+        'Publish confidence delta memo with recommendation.',
       ],
-      output: 'Evidence memo with source table.',
+      output: 'Evidence memo + confidence update matrix.',
     },
     {
       role: 'Writer',
-      objective: 'Communicate strategy in one crisp narrative.',
+      objective: 'Translate strategy into an operator-ready narrative.',
       tasks: [
-        'Draft operator update: context → decision → next actions.',
-        `Include risk watchlist (${riskLines.length} current high-signals).`,
-        'Publish 200-word brief for team alignment.',
+        'Draft update: signal summary → decisions → roadmap.',
+        `Embed risk watchlist (${riskLines.length} high-signal items).`,
+        'Prepare one concise standup and one stakeholder version.',
       ],
-      output: 'Stakeholder-ready strategy update.',
+      output: 'Briefing copy (internal + external variants).',
     },
     {
       role: 'Notion',
-      objective: 'Translate roadmap into execution database.',
+      objective: 'Materialize roadmap into execution system.',
       tasks: [
-        'Create board columns: 24h, 7d, 30d.',
-        'Add owner, due date, confidence, and status fields.',
-        'Link each card to source evidence and packet role.',
+        'Create db fields: impact, effort, urgency, confidence, horizon.',
+        'Generate 24h/7d/30d board views with owner filters.',
+        'Link each decision row to claim evidence and packet owner.',
       ],
-      output: 'Import-ready task schema for Notion.',
+      output: 'Import-ready Notion task schema + view config.',
     },
   ]
 }
 
-function toMarkdown(title: string, sources: SourceItem[], claims: Claim[], decisions: Decision[], packets: Packet[]): string {
+function toMarkdown(
+  title: string,
+  sources: SourceItem[],
+  claims: Claim[],
+  decisions: Decision[],
+  roadmap: RoadmapItem[],
+  packets: Packet[],
+): string {
   const lines: string[] = [
     `# ${title}`,
     '',
     `Generated: ${new Date().toISOString()}`,
     '',
     '## Intake Sources',
-    ...sources.map((s) => `- [${s.type.toUpperCase()}] ${s.raw}`),
+    ...sources.map((source) => `- [${source.type.toUpperCase()}] ${source.raw}`),
     '',
     '## Intelligence Brief',
-    ...claims.map((c) => `- (${c.confidence}) ${c.type.toUpperCase()}: ${c.text}`),
+    ...claims.map((claim) => `- (${claim.confidence}/${claim.confidenceScore}) ${claim.type.toUpperCase()}: ${claim.text}`),
     '',
     '## Ranked Decisions',
-    ...decisions.map((d) => `- ${d.title} | impact:${d.impact} effort:${d.effort} urgency:${d.urgency} score:${d.score.toFixed(1)}`),
+    ...decisions.map(
+      (decision) =>
+        `- ${decision.title} | score:${decision.score.toFixed(1)} impact:${decision.impact} effort:${decision.effort} urgency:${decision.urgency} | ${decision.rationale}`,
+    ),
+    '',
+    '## 24h / 7d / 30d Roadmap',
+    ...roadmap.map((item) => `- [${item.horizon}] ${item.action} | owner:${item.owner} | success:${item.successMetric}`),
     '',
     '## Execution Packets',
   ]
 
-  packets.forEach((p) => {
-    lines.push(`### ${p.role}`)
-    lines.push(`- Objective: ${p.objective}`)
-    p.tasks.forEach((task) => lines.push(`- Task: ${task}`))
-    lines.push(`- Output: ${p.output}`)
+  packets.forEach((packet) => {
+    lines.push(`### ${packet.role}`)
+    lines.push(`- Objective: ${packet.objective}`)
+    packet.tasks.forEach((task) => lines.push(`- Task: ${task}`))
+    lines.push(`- Output: ${packet.output}`)
     lines.push('')
   })
 
@@ -249,12 +326,12 @@ function toMarkdown(title: string, sources: SourceItem[], claims: Claim[], decis
 function downloadFile(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type })
   const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
   URL.revokeObjectURL(url)
 }
 
@@ -277,14 +354,15 @@ function App() {
   const sources = useMemo(() => parseSources(intakeText), [intakeText])
   const claims = useMemo(() => buildClaims(sources), [sources])
   const decisions = useMemo(() => buildDecisions(claims), [claims])
+  const roadmap = useMemo(() => buildRoadmap(decisions), [decisions])
   const packets = useMemo(() => buildPackets(decisions, claims), [decisions, claims])
 
   const groupedClaims = useMemo(
     () => ({
-      opportunity: claims.filter((c) => c.type === 'opportunity'),
-      risk: claims.filter((c) => c.type === 'risk'),
-      assumption: claims.filter((c) => c.type === 'assumption'),
-      unknown: claims.filter((c) => c.type === 'unknown'),
+      opportunity: claims.filter((claim) => claim.type === 'opportunity'),
+      risk: claims.filter((claim) => claim.type === 'risk'),
+      assumption: claims.filter((claim) => claim.type === 'assumption'),
+      unknown: claims.filter((claim) => claim.type === 'unknown'),
     }),
     [claims],
   )
@@ -305,12 +383,12 @@ function App() {
 
   const restoreSession = () => {
     if (!activeSession) return
-    const found = sessions.find((s) => s.id === activeSession)
+    const found = sessions.find((session) => session.id === activeSession)
     if (!found) return
     setIntakeText(found.intakeText)
   }
 
-  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, packets)
+  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, roadmap, packets)
 
   return (
     <div className="app">
@@ -318,13 +396,19 @@ function App() {
         <div>
           <p className="eyebrow">Operator Console</p>
           <h1>SignalDesk</h1>
-          <p className="sub">Turn messy context into decisions and task packets.</p>
+          <p className="sub">Turn messy context into intelligence briefs, ranked decisions, and execution packets.</p>
         </div>
         <div className="top-actions">
           <button onClick={() => downloadFile('signaldesk-pack.md', markdown, 'text/markdown')}>Export Markdown</button>
           <button
             className="ghost"
-            onClick={() => downloadFile('signaldesk-pack.json', JSON.stringify({ sources, claims, decisions, packets }, null, 2), 'application/json')}
+            onClick={() =>
+              downloadFile(
+                'signaldesk-pack.json',
+                JSON.stringify({ sources, claims, decisions, roadmap, packets }, null, 2),
+                'application/json',
+              )
+            }
           >
             Export JSON
           </button>
@@ -382,7 +466,10 @@ function App() {
                   {groupedClaims[key].length ? (
                     groupedClaims[key].map((claim, index) => (
                       <li key={`${claim.sourceId}-${index}`}>
-                        <strong>{claim.confidence}</strong> {claim.text}
+                        <strong>
+                          {claim.confidence} ({claim.confidenceScore})
+                        </strong>{' '}
+                        {claim.text}
                       </li>
                     ))
                   ) : (
@@ -396,17 +483,35 @@ function App() {
 
         <section className="panel">
           <h2>Decision Layer</h2>
-          <p className="hint">Ranked by impact × urgency minus effort.</p>
+          <p className="hint">Ranked by weighted impact + urgency − effort with confidence adjustment.</p>
           <ol className="decision-list">
             {decisions.map((decision, index) => (
               <li key={index}>
                 <p>{decision.title}</p>
+                <small>{decision.rationale}</small>
                 <small>
                   Score {decision.score.toFixed(1)} • {decision.horizon} • I:{decision.impact} E:{decision.effort} U:{decision.urgency}
                 </small>
               </li>
             ))}
           </ol>
+
+          <div className="roadmap">
+            <h3>24h / 7d / 30d roadmap</h3>
+            <ul>
+              {roadmap.map((item) => (
+                <li key={item.horizon}>
+                  <span className="horizon">{item.horizon}</span>
+                  <div>
+                    <p>{item.action}</p>
+                    <small>
+                      Owner: {item.owner} • Success: {item.successMetric}
+                    </small>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
 
         <section className="panel">

@@ -199,6 +199,57 @@ input, select {
 
 .decision-list p { margin: 0 0 0.2rem; }
 
+.decision-list small {
+  display: block;
+  color: #5e5651;
+  margin-top: 0.18rem;
+}
+
+.roadmap {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+}
+
+.roadmap h3 {
+  margin-bottom: 0.4rem;
+}
+
+.roadmap ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.roadmap li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.45rem;
+}
+
+.roadmap p {
+  margin: 0;
+}
+
+.horizon {
+  align-self: start;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.12rem 0.38rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .packet-grid {
   margin-top: 0.6rem;
   display: grid;
