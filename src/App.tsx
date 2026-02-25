@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import './App.css'
 import {
@@ -7,6 +7,7 @@ import {
   buildPackets,
   buildRoadmap,
   hasPendingReview,
+  intakeScopeKey,
   loadReviewerDecisions,
   loadSessions,
   mergeReviewerDecisions,
@@ -47,7 +48,13 @@ function App() {
   const [activeSession, setActiveSession] = useState('')
   const [notice, setNotice] = useState('Ready.')
   const [storageError, setStorageError] = useState<string | null>(null)
-  const [reviewers, setReviewers] = useState<Record<string, ReviewerDecision>>(() => loadReviewerDecisions())
+  const [reviewers, setReviewers] = useState<Record<string, ReviewerDecision>>({})
+
+  const reviewerScope = useMemo(() => intakeScopeKey(intakeText, activeSession || undefined), [intakeText, activeSession])
+
+  useEffect(() => {
+    setReviewers(loadReviewerDecisions(reviewerScope))
+  }, [reviewerScope])
 
   const sources = useMemo(() => parseSources(intakeText), [intakeText])
   const claims = useMemo(() => buildClaims(sources), [sources])
@@ -150,7 +157,7 @@ function App() {
     }
 
     try {
-      const next = saveReviewerDecision(entry, reviewers)
+      const next = saveReviewerDecision(entry, reviewers, reviewerScope)
       setReviewers(next)
       setStorageError(null)
       setNotice(`Reviewer action saved for ${decisionId}.`)

@@ -3,6 +3,7 @@ import {
   buildDecisions,
   hasPendingReview,
   mergeReviewerDecisions,
+  intakeScopeKey,
   parseSources,
   reviewerTrail,
   saveReviewerDecision,
@@ -90,7 +91,7 @@ describe('SignalDesk unit engine', () => {
       notes: 'validated with owner',
       updatedAt: new Date().toISOString(),
     }
-    const map = saveReviewerDecision(review, {}, memorySession)
+    const map = saveReviewerDecision(review, {}, 'scope:a', memorySession)
     const trail = reviewerTrail(map)
 
     expect(trail).toHaveLength(1)
@@ -113,5 +114,40 @@ describe('SignalDesk unit engine', () => {
 
     expect(reviewed[0].status).toBe('rejected')
     expect(reviewed[0].governanceReasons.join(' ')).toContain('out of scope this cycle')
+  })
+
+  it('prevents reviewer decisions from dataset A unblocking dataset B', () => {
+    const storage = new MemoryStorage()
+
+    const intakeA = 'Q4 risk is unknown and maybe declining?'
+    const intakeB = 'Q4 risk is unknown and maybe declining?\nadditional contradictory signal?'
+
+    const scopeA = intakeScopeKey(intakeA)
+    const scopeB = intakeScopeKey(intakeB)
+
+    const decisionsA = buildDecisions(buildClaims(parseSources(intakeA)))
+    expect(hasPendingReview(decisionsA)).toBe(true)
+
+    const reviewedA = saveReviewerDecision(
+      {
+        decisionId: decisionsA[0].id,
+        status: 'accepted',
+        notes: 'approved in dataset A',
+        updatedAt: new Date().toISOString(),
+      },
+      {},
+      scopeA,
+      storage,
+    )
+
+    const mergedA = mergeReviewerDecisions(decisionsA, reviewedA)
+    expect(mergedA[0].status).toBe('accepted')
+
+    const decisionsB = buildDecisions(buildClaims(parseSources(intakeB)))
+    const scopedReviewerMapB = JSON.parse(storage.getItem('signaldesk:reviewers:v1') || '{}')[scopeB] ?? {}
+    const mergedB = mergeReviewerDecisions(decisionsB, scopedReviewerMapB)
+
+    expect(Object.keys(scopedReviewerMapB)).toHaveLength(0)
+    expect(hasPendingReview(mergedB)).toBe(true)
   })
 })

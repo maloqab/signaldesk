@@ -81,6 +81,18 @@ export type SavedSession = {
 export const SESSION_KEY = 'signaldesk:sessions:v1'
 export const REVIEWER_KEY = 'signaldesk:reviewers:v1'
 
+export function intakeScopeKey(intakeText: string, sessionId?: string) {
+  const normalized = intakeText.trim().toLowerCase()
+  if (sessionId) return `session:${sessionId}`
+  if (!normalized) return 'intake:empty'
+
+  let hash = 5381
+  for (let i = 0; i < normalized.length; i += 1) {
+    hash = (hash * 33) ^ normalized.charCodeAt(i)
+  }
+  return `intake:${(hash >>> 0).toString(16)}`
+}
+
 const SIGNALS = {
   opportunity: ['launch', 'growth', 'demand', 'adoption', 'win', 'expand', 'retention', 'upsell', 'pipeline'],
   risk: ['risk', 'decline', 'churn', 'cost', 'delay', 'blocked', 'incident', 'burn', 'friction', 'drop'],
@@ -565,20 +577,34 @@ export function saveSessionToStorage(session: SavedSession, existing: SavedSessi
   return merged
 }
 
-export function loadReviewerDecisions(storage: Storage = sessionStorage): Record<string, ReviewerDecision> {
+type ReviewerStore = Record<string, Record<string, ReviewerDecision>>
+
+function loadReviewerStore(storage: Storage = sessionStorage): ReviewerStore {
   try {
     const raw = storage.getItem(REVIEWER_KEY)
     if (!raw) return {}
-    return JSON.parse(raw) as Record<string, ReviewerDecision>
+    return JSON.parse(raw) as ReviewerStore
   } catch {
     return {}
   }
 }
 
-export function saveReviewerDecision(entry: ReviewerDecision, current: Record<string, ReviewerDecision>, storage: Storage = sessionStorage) {
-  const next = { ...current, [entry.decisionId]: entry }
-  storage.setItem(REVIEWER_KEY, JSON.stringify(next))
-  return next
+export function loadReviewerDecisions(scopeKey: string, storage: Storage = sessionStorage): Record<string, ReviewerDecision> {
+  const store = loadReviewerStore(storage)
+  return store[scopeKey] ?? {}
+}
+
+export function saveReviewerDecision(
+  entry: ReviewerDecision,
+  current: Record<string, ReviewerDecision>,
+  scopeKey: string,
+  storage: Storage = sessionStorage,
+) {
+  const nextScope = { ...current, [entry.decisionId]: entry }
+  const store = loadReviewerStore(storage)
+  const nextStore: ReviewerStore = { ...store, [scopeKey]: nextScope }
+  storage.setItem(REVIEWER_KEY, JSON.stringify(nextStore))
+  return nextScope
 }
 
 export function reviewerTrail(reviewerMap: Record<string, ReviewerDecision>) {
