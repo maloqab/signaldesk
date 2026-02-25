@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import './App.css'
 
 type SourceType = 'url' | 'note' | 'transcript' | 'document'
@@ -440,6 +441,7 @@ function App() {
   const [sessionName, setSessionName] = useState('')
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions())
   const [activeSession, setActiveSession] = useState('')
+  const [notice, setNotice] = useState('Ready.')
 
   const sources = useMemo(() => parseSources(intakeText), [intakeText])
   const claims = useMemo(() => buildClaims(sources), [sources])
@@ -457,8 +459,34 @@ function App() {
     [claims],
   )
 
+  const invalidUrls = sources.filter((source) => source.type === 'url' && !source.valid)
+  const hasInput = sources.length > 0
+
+  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, roadmap, packets)
+
+  const exportMarkdown = () => {
+    if (!hasInput) {
+      setNotice('Add at least one source before exporting.')
+      return
+    }
+    downloadFile('signaldesk-pack.md', markdown, 'text/markdown')
+    setNotice('Exported full markdown pack.')
+  }
+
+  const exportJson = () => {
+    if (!hasInput) {
+      setNotice('Add at least one source before exporting.')
+      return
+    }
+    downloadFile('signaldesk-pack.json', JSON.stringify({ sources, claims, decisions, roadmap, packets }, null, 2), 'application/json')
+    setNotice('Exported JSON execution pack.')
+  }
+
   const saveSession = () => {
-    if (!sessionName.trim()) return
+    if (!sessionName.trim()) {
+      setNotice('Add a session name before saving.')
+      return
+    }
     const next: SavedSession = {
       id: crypto.randomUUID(),
       name: sessionName.trim(),
@@ -469,19 +497,40 @@ function App() {
     setSessions(merged)
     localStorage.setItem(SESSION_KEY, JSON.stringify(merged))
     setSessionName('')
+    setNotice(`Session "${next.name}" saved.`)
   }
 
   const restoreSession = () => {
-    if (!activeSession) return
+    if (!activeSession) {
+      setNotice('Select a saved session to load.')
+      return
+    }
     const found = sessions.find((session) => session.id === activeSession)
-    if (!found) return
+    if (!found) {
+      setNotice('Selected session is unavailable.')
+      return
+    }
     setIntakeText(found.intakeText)
+    setNotice(`Loaded session "${found.name}".`)
   }
 
-  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, roadmap, packets)
+  const handleGlobalKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const mod = event.metaKey || event.ctrlKey
+    if (!mod) return
+
+    if (event.key.toLowerCase() === 'enter') {
+      event.preventDefault()
+      exportMarkdown()
+    }
+
+    if (event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      saveSession()
+    }
+  }
 
   return (
-    <div className="app">
+    <div className="app" onKeyDownCapture={handleGlobalKeyDown}>
       <header className="topbar">
         <div>
           <p className="eyebrow">Operator Console</p>
@@ -489,29 +538,34 @@ function App() {
           <p className="sub">Turn messy context into intelligence briefs, ranked decisions, and execution packets.</p>
         </div>
         <div className="top-actions">
-          <button onClick={() => downloadFile('signaldesk-pack.md', markdown, 'text/markdown')}>Export Markdown</button>
-          <button
-            className="ghost"
-            onClick={() =>
-              downloadFile(
-                'signaldesk-pack.json',
-                JSON.stringify({ sources, claims, decisions, roadmap, packets }, null, 2),
-                'application/json',
-              )
-            }
-          >
+          <button onClick={exportMarkdown} disabled={!hasInput}>
+            Export Markdown
+          </button>
+          <button className="ghost" onClick={exportJson} disabled={!hasInput}>
             Export JSON
           </button>
         </div>
       </header>
 
+      <section className="status-strip" aria-live="polite">
+        <span>{notice}</span>
+        <span className="shortcut">⌘/Ctrl+Enter export • ⌘/Ctrl+S save session</span>
+      </section>
+
       <main className="grid">
         <section className="panel">
           <h2>Intake Layer</h2>
           <p className="hint">Paste URLs, notes, transcripts, and docs — one item per line.</p>
+          <p className="intake-meta">
+            Parsed: {sources.length} source(s)
+            {invalidUrls.length ? ` • ${invalidUrls.length} invalid URL(s)` : ' • all URLs valid'}
+          </p>
           <textarea
             value={intakeText}
-            onChange={(event) => setIntakeText(event.target.value)}
+            onChange={(event) => {
+              setIntakeText(event.target.value)
+              setNotice('Draft updated. Run export when ready.')
+            }}
             placeholder="https://competitor.com/launch-note\nQ4 pipeline might stall if conversion dips\nTranscript: customer repeatedly asked for API access"
             rows={12}
           />

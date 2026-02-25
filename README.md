@@ -1,73 +1,124 @@
-# React + TypeScript + Vite
+# SignalDesk
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+SignalDesk is an AI-operator style console for turning messy context (links, notes, docs, transcript fragments) into:
+- structured intelligence briefs
+- ranked decisions
+- 24h / 7d / 30d action roadmaps
+- execution-ready task packets by role
 
-Currently, two official plugins are available:
+Built local-first with no backend requirement.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Who it serves
 
-## React Compiler
+- Solo founders and operators handling fragmented context
+- Analysts turning raw inputs into decision memos
+- AI-native teams that need execution packets, not generic summaries
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## What we built
 
-## Expanding the ESLint configuration
+### 1) Intake Layer
+- Bulk text intake (one source per line)
+- Source classification (`url`, `note`, `transcript`, `document`)
+- URL validity checks + invalid-source highlighting
+- Local session save/reload (`localStorage`)
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 2) Intel Engine
+- Per-source multi-claim extraction across:
+  - opportunities
+  - risks
+  - assumptions
+  - unknowns
+- Confidence scoring per claim (`confidenceScore`) + bucket (`high`/`medium`/`low`)
+- Extracted signal set designed for explainability/tuning
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### 3) Decision Layer
+- Weighted ranking using impact, urgency, effort, and confidence adjustments
+- Decision rationale generated for each ranked item
+- 24h / 7d / 30d roadmap with owner + success metric
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 4) Execution Packets
+Role-specific packets for:
+- Coder
+- Researcher
+- Writer
+- Notion
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Each packet includes:
+- objective
+- context
+- tasks
+- acceptance criteria
+- dependencies
+- risks
+- handoff prompt
+- expected output
+
+Exports:
+- full intelligence pack (`.md`, `.json`)
+- per-role packet markdown export
+
+## Architecture
+
+Single-page React app with deterministic local inference.
+
+- `src/App.tsx`
+  - source parsing + classification
+  - confidence scoring
+  - claim extraction
+  - decision scoring + roadmap generation
+  - packet generation + export orchestration
+- `src/App.css`
+  - responsive operator-console UI
+
+Processing pipeline:
+1. Intake text -> parsed sources
+2. Sources -> claims + confidence
+3. Claims -> ranked decisions
+4. Decisions -> roadmap + packets
+5. Exports -> markdown/json artifacts
+
+## Data model (core types)
+
+- `SourceItem`: id, raw, type, valid
+- `Claim`: type, text, confidence, confidenceScore, sourceId
+- `Decision`: title, rationale, impact, effort, urgency, score, horizon
+- `RoadmapItem`: horizon, action, owner, successMetric
+- `Packet`: role, objective, context, tasks, acceptanceCriteria, dependencies, risks, handoffPrompt, output
+- `SavedSession`: id, name, createdAt, intakeText
+
+## UX and keyboard flow
+
+- Responsive multi-panel workspace layout
+- Live status strip for action feedback
+- Keyboard shortcuts:
+  - `Cmd/Ctrl + Enter`: export markdown pack
+  - `Cmd/Ctrl + S`: save session
+- Clear empty/error states:
+  - disabled exports when no sources
+  - notices for save/load/export failure states
+  - invalid URL count surfaced in intake meta
+
+## Run locally
+
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Build
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run lint
+npm run build
+npm run preview
 ```
+
+## Scope boundaries (current)
+
+- No backend, auth, or server persistence
+- No external LLM calls in current version (deterministic local heuristics)
+- Notion support is packet/schema-ready export format, not direct API sync yet
+
+## Why this is helpful
+
+SignalDesk bridges a gap between summary tools and execution systems: it converts noisy context into operator-grade outputs with explicit decisions, owners, timelines, and handoff artifacts.

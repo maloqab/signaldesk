@@ -60,6 +60,24 @@ h1 { font-size: clamp(2rem, 4vw, 3rem); }
   flex-wrap: wrap;
 }
 
+.status-strip {
+  margin-top: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.45rem 0.6rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  color: #4f4944;
+  font-size: 0.88rem;
+}
+
+.shortcut {
+  color: #6d645d;
+}
+
 button, input, select, textarea {
   font: inherit;
 }
@@ -71,6 +89,11 @@ button {
   border-radius: 10px;
   padding: 0.55rem 0.8rem;
   cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 button.ghost {
@@ -104,9 +127,15 @@ button.tiny {
 .panel:nth-child(4) { grid-column: span 6; }
 
 .hint {
-  margin: 0.4rem 0 0.65rem;
+  margin: 0.4rem 0 0.35rem;
   color: #645f59;
   font-size: 0.9rem;
+}
+
+.intake-meta {
+  margin: 0 0 0.65rem;
+  font-size: 0.82rem;
+  color: #6a625d;
 }
 
 textarea {
