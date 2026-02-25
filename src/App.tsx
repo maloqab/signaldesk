@@ -42,7 +42,12 @@ type RoadmapItem = {
 type Packet = {
   role: PacketRole
   objective: string
+  context: string
   tasks: string[]
+  acceptanceCriteria: string[]
+  dependencies: string[]
+  risks: string[]
+  handoffPrompt: string
   output: string
 }
 
@@ -234,49 +239,90 @@ function buildRoadmap(decisions: Decision[]): RoadmapItem[] {
 
 function buildPackets(decisions: Decision[], claims: Claim[]): Packet[] {
   const top = decisions[0]
-  const riskLines = claims.filter((c) => c.type === 'risk').slice(0, 3).map((c) => c.text)
-  const unknownLines = claims.filter((c) => c.type === 'unknown').slice(0, 3).map((c) => c.text)
+  const riskLines = claims.filter((claim) => claim.type === 'risk').slice(0, 3).map((claim) => claim.text)
+  const unknownLines = claims.filter((claim) => claim.type === 'unknown').slice(0, 3).map((claim) => claim.text)
+  const opportunityLines = claims.filter((claim) => claim.type === 'opportunity').slice(0, 3).map((claim) => claim.text)
 
   return [
     {
       role: 'Coder',
       objective: top ? top.title : 'Build the highest-impact execution slice.',
+      context: `Top decision score: ${top?.score.toFixed(1) ?? 'n/a'}.`,
       tasks: [
-        'Break top decision into 3 deliverable milestones (24h/7d/30d).',
-        'Add instrumentation hooks for outcome tracking.',
-        'Ship smallest production-usable slice with rollback notes.',
+        'Translate decision into an implementation plan with milestones (today/this week/this month).',
+        'Implement the minimum production-usable slice with instrumentation hooks.',
+        'Document rollback path, risks, and measurable success conditions.',
       ],
+      acceptanceCriteria: [
+        'A runnable implementation exists with clear setup instructions.',
+        'At least one metric is tracked against decision success.',
+        'PR includes changelog and risk notes.',
+      ],
+      dependencies: ['Access to codebase + deployment target', 'Metric sink (analytics/logging)'],
+      risks: riskLines.length ? riskLines : ['Scope expansion without measurable milestone'],
+      handoffPrompt:
+        'You are the implementation owner. Execute the tasks in order, keep scope tight, and return a PR summary with KPI deltas.',
       output: 'PR + release notes + KPI dashboard hook.',
     },
     {
       role: 'Researcher',
       objective: 'Resolve unknowns and de-risk assumptions with evidence.',
+      context: `${unknownLines.length} unknown signals and ${riskLines.length} risk signals currently active.`,
       tasks: [
-        `Prioritize unknown queue (${unknownLines.length} active items).`,
-        'Collect 5 corroborating/disproving data points per key claim.',
-        'Publish confidence delta memo with recommendation.',
+        'Prioritize unknown queue by decision impact.',
+        'Collect 5 corroborating/disproving data points per top unknown.',
+        'Publish confidence delta memo with keep/kill/iterate recommendation.',
       ],
+      acceptanceCriteria: [
+        'Each top unknown has at least one primary source and one secondary source.',
+        'Confidence updates are quantified and tied to evidence links.',
+        'Recommendation includes explicit next decision owner.',
+      ],
+      dependencies: ['Source access (links/docs/transcripts)', 'Timebox for evidence sprint'],
+      risks: ['Confirmation bias from single-source evidence', ...riskLines.slice(0, 2)],
+      handoffPrompt:
+        'You are the research lead. Produce an evidence-backed memo, update confidence per claim, and flag any decision that should be paused.',
       output: 'Evidence memo + confidence update matrix.',
     },
     {
       role: 'Writer',
-      objective: 'Translate strategy into an operator-ready narrative.',
+      objective: 'Translate strategy into operator-ready narratives.',
+      context: `${opportunityLines.length} opportunities and ${riskLines.length} risks must be represented clearly.`,
       tasks: [
-        'Draft update: signal summary → decisions → roadmap.',
-        `Embed risk watchlist (${riskLines.length} high-signal items).`,
-        'Prepare one concise standup and one stakeholder version.',
+        'Draft narrative flow: signal summary → ranked decisions → roadmap.',
+        'Prepare two versions: 90-second standup and stakeholder digest.',
+        'Include explicit ask/decision points and next check-in date.',
       ],
-      output: 'Briefing copy (internal + external variants).',
+      acceptanceCriteria: [
+        'Narrative contains decision rationale, not just summary text.',
+        'Each roadmap horizon has one owner and one success metric.',
+        'Language is concise and non-ambiguous for handoff.',
+      ],
+      dependencies: ['Latest decision ranking', 'Roadmap + risk watchlist'],
+      risks: ['Overly generic language that hides tradeoffs'],
+      handoffPrompt:
+        'You are the strategy writer. Deliver concise, decision-first updates that operators can execute without clarification loops.',
+      output: 'Briefing copy (standup + stakeholder variants).',
     },
     {
       role: 'Notion',
-      objective: 'Materialize roadmap into execution system.',
+      objective: 'Materialize roadmap into an execution database.',
+      context: 'Operationalize all decisions with traceability back to source claims.',
       tasks: [
-        'Create db fields: impact, effort, urgency, confidence, horizon.',
-        'Generate 24h/7d/30d board views with owner filters.',
-        'Link each decision row to claim evidence and packet owner.',
+        'Create database schema with impact, effort, urgency, confidence, horizon, owner.',
+        'Generate filtered views for 24h/7d/30d planning cadences.',
+        'Attach each row to evidence links and packet owner role.',
       ],
-      output: 'Import-ready Notion task schema + view config.',
+      acceptanceCriteria: [
+        'Every decision appears as a trackable row with owner and due window.',
+        'Views exist for daily execution and weekly review.',
+        'Fields support confidence changes over time.',
+      ],
+      dependencies: ['Notion workspace + template import permission', 'Final roadmap items'],
+      risks: ['Schema drift if fields are renamed without migration notes'],
+      handoffPrompt:
+        'You are the operations system owner. Build a clean Notion execution layer that mirrors roadmap horizons and supports status reporting.',
+      output: 'Import-ready Notion schema + seeded execution board.',
     },
   ]
 }
@@ -315,10 +361,54 @@ function toMarkdown(
   packets.forEach((packet) => {
     lines.push(`### ${packet.role}`)
     lines.push(`- Objective: ${packet.objective}`)
-    packet.tasks.forEach((task) => lines.push(`- Task: ${task}`))
+    lines.push(`- Context: ${packet.context}`)
+    lines.push('- Tasks:')
+    packet.tasks.forEach((task) => lines.push(`  - ${task}`))
+    lines.push('- Acceptance criteria:')
+    packet.acceptanceCriteria.forEach((item) => lines.push(`  - ${item}`))
+    lines.push('- Dependencies:')
+    packet.dependencies.forEach((item) => lines.push(`  - ${item}`))
+    lines.push('- Risks:')
+    packet.risks.forEach((item) => lines.push(`  - ${item}`))
+    lines.push(`- Handoff prompt: ${packet.handoffPrompt}`)
     lines.push(`- Output: ${packet.output}`)
     lines.push('')
   })
+
+  return lines.join('\n')
+}
+
+function packetToMarkdown(packet: Packet): string {
+  const lines = [
+    `# SignalDesk Task Packet — ${packet.role}`,
+    '',
+    `Generated: ${new Date().toISOString()}`,
+    '',
+    `## Objective`,
+    packet.objective,
+    '',
+    `## Context`,
+    packet.context,
+    '',
+    `## Tasks`,
+    ...packet.tasks.map((task) => `- ${task}`),
+    '',
+    `## Acceptance Criteria`,
+    ...packet.acceptanceCriteria.map((item) => `- ${item}`),
+    '',
+    `## Dependencies`,
+    ...packet.dependencies.map((item) => `- ${item}`),
+    '',
+    `## Risks`,
+    ...packet.risks.map((item) => `- ${item}`),
+    '',
+    `## Handoff Prompt`,
+    packet.handoffPrompt,
+    '',
+    `## Expected Output`,
+    packet.output,
+    '',
+  ]
 
   return lines.join('\n')
 }
@@ -519,13 +609,41 @@ function App() {
           <div className="packet-grid">
             {packets.map((packet) => (
               <article key={packet.role}>
-                <h3>{packet.role}</h3>
+                <div className="packet-head">
+                  <h3>{packet.role}</h3>
+                  <button
+                    className="ghost tiny"
+                    onClick={() => downloadFile(`signaldesk-${packet.role.toLowerCase()}-packet.md`, packetToMarkdown(packet), 'text/markdown')}
+                  >
+                    Export packet
+                  </button>
+                </div>
                 <p>{packet.objective}</p>
+                <p className="output">Context: {packet.context}</p>
                 <ul>
                   {packet.tasks.map((task) => (
                     <li key={task}>{task}</li>
                   ))}
                 </ul>
+                <p className="mini-title">Acceptance criteria</p>
+                <ul>
+                  {packet.acceptanceCriteria.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                <p className="mini-title">Dependencies</p>
+                <ul>
+                  {packet.dependencies.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                <p className="mini-title">Risks</p>
+                <ul>
+                  {packet.risks.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+                <p className="output">Handoff prompt: {packet.handoffPrompt}</p>
                 <p className="output">Output: {packet.output}</p>
               </article>
             ))}

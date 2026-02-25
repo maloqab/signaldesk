@@ -78,6 +78,11 @@ button.ghost {
   color: var(--ink);
 }
 
+button.tiny {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.78rem;
+}
+
 .grid {
   margin-top: 1rem;
   display: grid;
@@ -262,6 +267,21 @@ input, select {
   border-radius: 10px;
   padding: 0.55rem;
   background: #fff;
+}
+
+.packet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.mini-title {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #605852;
+  margin: 0.55rem 0 0.2rem;
 }
 
 .output { font-size: 0.85rem; color: #5c5550; }
