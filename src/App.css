@@ -245,6 +245,13 @@ input, select {
   margin-top: 0.18rem;
 }
 
+.review-controls {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
 .roadmap {
   margin-top: 0.8rem;
   border-top: 1px solid var(--line);

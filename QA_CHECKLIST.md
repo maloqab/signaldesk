@@ -1,6 +1,6 @@
 # SignalDesk QA Checklist
 
-## Manual Validation Steps
+## Manual Validation Steps (Gate 1 + Gate 2)
 
 1. Start app locally:
    - `npm install`
@@ -18,8 +18,23 @@
 7. Trigger keyboard shortcuts:
    - `Ctrl/Cmd + S` saves session.
    - `Ctrl/Cmd + Enter` exports markdown.
-8. Click *Export JSON* and verify downloaded JSON includes `sources`, `claims`, `decisions`, `roadmap`, `packets`.
-9. Validate packet export buttons generate per-role markdown files.
-10. Optional error-boundary smoke test:
-    - Temporarily throw inside `App` render.
-    - Confirm fallback message from `ErrorBoundary` is displayed.
+8. Confirm explainability in UI:
+   - Claims show component breakdown (SQ/SR/R/P)
+   - Decisions show “Why this score” and governance reasons
+9. Governance rules check:
+   - Use conflicting input (contains both opportunity and risk signal from same source)
+   - Verify at least one decision becomes `needs-review`
+10. Export gating check:
+   - While any decision is `needs-review`, final export buttons remain disabled and blocker message is visible
+11. Reviewer workflow:
+   - Set decision status to `accepted` and add reviewer notes
+   - Refresh page and confirm reviewer actions persist (session storage)
+12. Final export after review resolution:
+   - Resolve all `needs-review` statuses
+   - Export JSON and verify `reviewerTrail` exists
+   - Export Markdown and verify `## Reviewer Trail` section includes notes/dispositions
+13. Packet export:
+   - Verify per-role packet buttons still generate markdown files
+14. Optional error-boundary smoke test:
+   - Temporarily throw inside `App` render.
+   - Confirm fallback message from `ErrorBoundary` is displayed.

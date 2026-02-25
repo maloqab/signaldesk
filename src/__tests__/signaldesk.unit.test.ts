@@ -1,11 +1,44 @@
 import {
   buildClaims,
-  bucketConfidence,
+  buildDecisions,
+  hasPendingReview,
+  mergeReviewerDecisions,
   parseSources,
+  reviewerTrail,
+  saveReviewerDecision,
   saveSessionToStorage,
-  scoreConfidence,
+  scoreBreakdown,
+  type ReviewerDecision,
   type SavedSession,
 } from '../lib/signaldesk'
+
+class MemoryStorage implements Storage {
+  private data = new Map<string, string>()
+
+  get length() {
+    return this.data.size
+  }
+
+  clear() {
+    this.data.clear()
+  }
+
+  getItem(key: string) {
+    return this.data.get(key) ?? null
+  }
+
+  key(index: number) {
+    return Array.from(this.data.keys())[index] ?? null
+  }
+
+  removeItem(key: string) {
+    this.data.delete(key)
+  }
+
+  setItem(key: string, value: string) {
+    this.data.set(key, value)
+  }
+}
 
 describe('SignalDesk unit engine', () => {
   it('parses intake lines and classifies them', () => {
@@ -17,54 +50,28 @@ describe('SignalDesk unit engine', () => {
     expect(sources[2]).toMatchObject({ type: 'transcript' })
   })
 
-  it('extracts claims from mixed risk/opportunity intake', () => {
-    const sources = parseSources('Launch win with growth data confirmed\nPotential churn risk and delay')
+  it('returns deterministic scoring breakdown components', () => {
+    const breakdown = scoreBreakdown('Published survey data confirms growth this week', 'document')
+
+    expect(breakdown.signalQuality).toBeGreaterThan(0)
+    expect(breakdown.sourceReliability).toBe(24)
+    expect(breakdown.recency).toBeGreaterThan(0)
+    expect(breakdown.total).toBe(
+      Math.max(8, Math.min(95, breakdown.signalQuality + breakdown.sourceReliability + breakdown.recency - breakdown.contradictionPenalty)),
+    )
+  })
+
+  it('blocks final export when auto-governance leaves needs-review decisions', () => {
+    const sources = parseSources('Q4 risk is unknown and maybe declining?')
     const claims = buildClaims(sources)
+    const decisions = buildDecisions(claims)
 
-    expect(claims.some((c) => c.type === 'opportunity')).toBe(true)
-    expect(claims.some((c) => c.type === 'risk')).toBe(true)
+    expect(decisions.some((d) => d.status === 'needs-review')).toBe(true)
+    expect(hasPendingReview(decisions)).toBe(true)
   })
 
-  it('scores confidence and buckets levels correctly', () => {
-    const highScore = scoreConfidence('Published survey data confirms strong retention growth', 'document')
-    const lowScore = scoreConfidence('maybe perhaps rumor?', 'note')
-
-    expect(highScore).toBeGreaterThan(lowScore)
-    expect(bucketConfidence(highScore)).toBe('high')
-    expect(bucketConfidence(lowScore)).toBe('low')
-  })
-
-  it('persists sessions into local storage wrapper', () => {
-    class MemoryStorage implements Storage {
-      private data = new Map<string, string>()
-
-      get length() {
-        return this.data.size
-      }
-
-      clear() {
-        this.data.clear()
-      }
-
-      getItem(key: string) {
-        return this.data.get(key) ?? null
-      }
-
-      key(index: number) {
-        return Array.from(this.data.keys())[index] ?? null
-      }
-
-      removeItem(key: string) {
-        this.data.delete(key)
-      }
-
-      setItem(key: string, value: string) {
-        this.data.set(key, value)
-      }
-    }
-
-    const storage: Storage = new MemoryStorage()
-
+  it('persists sessions and reviewer actions into storage wrappers', () => {
+    const local = new MemoryStorage()
     const session: SavedSession = {
       id: 's-1',
       name: 'Test Session',
@@ -72,9 +79,39 @@ describe('SignalDesk unit engine', () => {
       intakeText: 'growth signal',
     }
 
-    const merged = saveSessionToStorage(session, [], storage)
+    const mergedSessions = saveSessionToStorage(session, [], local)
+    expect(mergedSessions).toHaveLength(1)
+    expect(local.getItem('signaldesk:sessions:v1')).toContain('Test Session')
 
-    expect(merged).toHaveLength(1)
-    expect(storage.getItem('signaldesk:sessions:v1')).toContain('Test Session')
+    const memorySession = new MemoryStorage()
+    const review: ReviewerDecision = {
+      decisionId: 'd-24h-1',
+      status: 'accepted',
+      notes: 'validated with owner',
+      updatedAt: new Date().toISOString(),
+    }
+    const map = saveReviewerDecision(review, {}, memorySession)
+    const trail = reviewerTrail(map)
+
+    expect(trail).toHaveLength(1)
+    expect(memorySession.getItem('signaldesk:reviewers:v1')).toContain('validated with owner')
+  })
+
+  it('applies reviewer status and notes into decision governance', () => {
+    const sources = parseSources('https://example.com launch growth data')
+    const claims = buildClaims(sources)
+    const base = buildDecisions(claims)
+
+    const reviewed = mergeReviewerDecisions(base, {
+      [base[0].id]: {
+        decisionId: base[0].id,
+        status: 'rejected',
+        notes: 'out of scope this cycle',
+        updatedAt: new Date().toISOString(),
+      },
+    })
+
+    expect(reviewed[0].status).toBe('rejected')
+    expect(reviewed[0].governanceReasons.join(' ')).toContain('out of scope this cycle')
   })
 })

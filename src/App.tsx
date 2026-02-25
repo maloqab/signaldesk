@@ -6,11 +6,18 @@ import {
   buildDecisions,
   buildPackets,
   buildRoadmap,
+  hasPendingReview,
+  loadReviewerDecisions,
   loadSessions,
+  mergeReviewerDecisions,
   packetToMarkdown,
   parseSources,
+  reviewerTrail,
+  saveReviewerDecision,
   saveSessionToStorage,
   toMarkdown,
+  type DecisionStatus,
+  type ReviewerDecision,
   type SavedSession,
 } from './lib/signaldesk'
 
@@ -40,13 +47,17 @@ function App() {
   const [activeSession, setActiveSession] = useState('')
   const [notice, setNotice] = useState('Ready.')
   const [storageError, setStorageError] = useState<string | null>(null)
+  const [reviewers, setReviewers] = useState<Record<string, ReviewerDecision>>(() => loadReviewerDecisions())
 
   const sources = useMemo(() => parseSources(intakeText), [intakeText])
   const claims = useMemo(() => buildClaims(sources), [sources])
-  const decisions = useMemo(() => buildDecisions(claims), [claims])
+  const baseDecisions = useMemo(() => buildDecisions(claims), [claims])
+  const decisions = useMemo(() => mergeReviewerDecisions(baseDecisions, reviewers), [baseDecisions, reviewers])
   const roadmap = useMemo(() => buildRoadmap(decisions), [decisions])
   const packets = useMemo(() => buildPackets(decisions, claims), [decisions, claims])
   const intakeIssues = useMemo(() => validateIntake(intakeText), [intakeText])
+  const pendingReview = useMemo(() => hasPendingReview(decisions), [decisions])
+  const trail = useMemo(() => reviewerTrail(reviewers), [reviewers])
 
   const groupedClaims = useMemo(
     () => ({
@@ -61,24 +72,30 @@ function App() {
   const invalidUrls = sources.filter((source) => source.type === 'url' && !source.valid)
   const hasInput = sources.length > 0
 
-  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, roadmap, packets)
+  const markdown = toMarkdown('SignalDesk Intelligence Pack', sources, claims, decisions, roadmap, packets, trail)
+
+  const blockedExportReason = pendingReview
+    ? 'Final export is blocked: one or more decisions still need review.'
+    : intakeIssues.length > 0
+      ? 'Resolve intake validation issues before exporting.'
+      : ''
 
   const exportMarkdown = () => {
-    if (!hasInput || intakeIssues.length > 0) {
-      setNotice('Resolve intake validation issues before exporting.')
+    if (!hasInput || blockedExportReason) {
+      setNotice(blockedExportReason || 'Add at least one source before exporting.')
       return
     }
     downloadFile('signaldesk-pack.md', markdown, 'text/markdown')
-    setNotice('Exported full markdown pack.')
+    setNotice('Exported final markdown pack.')
   }
 
   const exportJson = () => {
-    if (!hasInput || intakeIssues.length > 0) {
-      setNotice('Resolve intake validation issues before exporting.')
+    if (!hasInput || blockedExportReason) {
+      setNotice(blockedExportReason || 'Add at least one source before exporting.')
       return
     }
-    downloadFile('signaldesk-pack.json', JSON.stringify({ sources, claims, decisions, roadmap, packets }, null, 2), 'application/json')
-    setNotice('Exported JSON execution pack.')
+    downloadFile('signaldesk-pack.json', JSON.stringify({ sources, claims, decisions, roadmap, packets, reviewerTrail: trail }, null, 2), 'application/json')
+    setNotice('Exported final JSON execution pack.')
   }
 
   const saveSession = () => {
@@ -124,6 +141,25 @@ function App() {
     setNotice(`Loaded session "${found.name}".`)
   }
 
+  const updateReviewer = (decisionId: string, status: DecisionStatus, notes: string) => {
+    const entry: ReviewerDecision = {
+      decisionId,
+      status,
+      notes,
+      updatedAt: new Date().toISOString(),
+    }
+
+    try {
+      const next = saveReviewerDecision(entry, reviewers)
+      setReviewers(next)
+      setStorageError(null)
+      setNotice(`Reviewer action saved for ${decisionId}.`)
+    } catch {
+      setStorageError('Unable to persist reviewer actions in session storage.')
+      setNotice('Reviewer save failed.')
+    }
+  }
+
   const handleGlobalKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     const mod = event.metaKey || event.ctrlKey
     if (!mod) return
@@ -145,14 +181,14 @@ function App() {
         <div>
           <p className="eyebrow">Operator Console</p>
           <h1>SignalDesk</h1>
-          <p className="sub">Turn messy context into intelligence briefs, ranked decisions, and execution packets.</p>
+          <p className="sub">Turn messy context into intelligence briefs, governed decisions, and reviewable execution packets.</p>
         </div>
         <div className="top-actions">
-          <button onClick={exportMarkdown} disabled={!hasInput || intakeIssues.length > 0}>
-            Export Markdown
+          <button onClick={exportMarkdown} disabled={!hasInput || !!blockedExportReason}>
+            Export Markdown (Final)
           </button>
-          <button className="ghost" onClick={exportJson} disabled={!hasInput || intakeIssues.length > 0}>
-            Export JSON
+          <button className="ghost" onClick={exportJson} disabled={!hasInput || !!blockedExportReason}>
+            Export JSON (Final)
           </button>
         </div>
       </header>
@@ -161,6 +197,12 @@ function App() {
         <span>{notice}</span>
         <span className="shortcut">⌘/Ctrl+Enter export • ⌘/Ctrl+S save session</span>
       </section>
+
+      {blockedExportReason && (
+        <section className="validation-list" role="alert">
+          {blockedExportReason}
+        </section>
+      )}
 
       <main className="grid">
         <section className="panel">
@@ -244,6 +286,11 @@ function App() {
                           {claim.confidence} ({claim.confidenceScore})
                         </strong>{' '}
                         {claim.text}
+                        <small>
+                          {' '}
+                          Why: SQ {claim.scoreBreakdown.signalQuality}, SR {claim.scoreBreakdown.sourceReliability}, R {claim.scoreBreakdown.recency}, P -
+                          {claim.scoreBreakdown.contradictionPenalty}
+                        </small>
                       </li>
                     ))
                   ) : (
@@ -256,18 +303,42 @@ function App() {
         </section>
 
         <section className="panel">
-          <h2>Decision Layer</h2>
-          <p className="hint">Ranked by weighted impact + urgency − effort with confidence adjustment.</p>
+          <h2>Decision Governance</h2>
+          <p className="hint">Deterministic score breakdown + reviewer disposition controls.</p>
           <ol className="decision-list">
-            {decisions.map((decision, index) => (
-              <li key={index}>
-                <p>{decision.title}</p>
-                <small>{decision.rationale}</small>
-                <small>
-                  Score {decision.score.toFixed(1)} • {decision.horizon} • I:{decision.impact} E:{decision.effort} U:{decision.urgency}
-                </small>
-              </li>
-            ))}
+            {decisions.map((decision) => {
+              const review = reviewers[decision.id]
+              return (
+                <li key={decision.id}>
+                  <p>{decision.title}</p>
+                  <small>{decision.rationale}</small>
+                  <small>
+                    Score {decision.score.toFixed(1)} • status: <strong>{decision.status}</strong> • {decision.horizon} • I:{decision.impact} E:{decision.effort} U:
+                    {decision.urgency}
+                  </small>
+                  <small>
+                    Why this score: SQ {decision.scoreBreakdown.signalQuality}, SR {decision.scoreBreakdown.sourceReliability}, R {decision.scoreBreakdown.recency}, P -
+                    {decision.scoreBreakdown.contradictionPenalty}
+                  </small>
+                  <small>Governance: {decision.governanceReasons.join(' | ')}</small>
+                  <div className="review-controls">
+                    <select
+                      value={review?.status ?? decision.status}
+                      onChange={(event) => updateReviewer(decision.id, event.target.value as DecisionStatus, review?.notes ?? '')}
+                    >
+                      <option value="accepted">accepted</option>
+                      <option value="needs-review">needs-review</option>
+                      <option value="rejected">rejected</option>
+                    </select>
+                    <input
+                      value={review?.notes ?? ''}
+                      placeholder="Reviewer notes"
+                      onChange={(event) => updateReviewer(decision.id, review?.status ?? decision.status, event.target.value)}
+                    />
+                  </div>
+                </li>
+              )
+            })}
           </ol>
 
           <div className="roadmap">
@@ -289,7 +360,23 @@ function App() {
         </section>
 
         <section className="panel">
-          <h2>Execution Packets</h2>
+          <h2>Execution Packets + Reviewer Trail</h2>
+          <p className="hint">Reviewer actions are persisted in session storage and exported with final artifacts.</p>
+          <ul className="source-list">
+            {trail.length ? (
+              trail.map((item) => (
+                <li key={item.decisionId + item.updatedAt}>
+                  <span className="badge note">{item.status}</span>
+                  <span>
+                    {item.decisionId} • {new Date(item.updatedAt).toLocaleString()} {item.notes ? `• ${item.notes}` : ''}
+                  </span>
+                </li>
+              ))
+            ) : (
+              <li className="empty">No reviewer actions yet.</li>
+            )}
+          </ul>
+
           <div className="packet-grid">
             {packets.map((packet) => (
               <article key={packet.role}>
@@ -309,26 +396,6 @@ function App() {
                     <li key={task}>{task}</li>
                   ))}
                 </ul>
-                <p className="mini-title">Acceptance criteria</p>
-                <ul>
-                  {packet.acceptanceCriteria.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-                <p className="mini-title">Dependencies</p>
-                <ul>
-                  {packet.dependencies.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-                <p className="mini-title">Risks</p>
-                <ul>
-                  {packet.risks.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-                <p className="output">Handoff prompt: {packet.handoffPrompt}</p>
-                <p className="output">Output: {packet.output}</p>
               </article>
             ))}
           </div>

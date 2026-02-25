@@ -10,19 +10,19 @@ npx vitest run --coverage
 
 ```text
 ✓ src/__tests__/signaldesk.integration.test.ts (1 test)
-✓ src/__tests__/signaldesk.unit.test.ts (4 tests)
+✓ src/__tests__/signaldesk.unit.test.ts (5 tests)
 
 Test Files  2 passed (2)
-Tests       5 passed (5)
-Duration    570ms
+Tests       6 passed (6)
+Duration    528ms
 
 Coverage report from v8
----------------|---------|----------|---------|---------|--------------------
+---------------|---------|----------|---------|---------|-----------------------
 File           | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
----------------|---------|----------|---------|---------|--------------------
-All files      |   86.01 |    77.46 |   87.75 |   87.03 |
-signaldesk.ts  |   86.01 |    77.46 |   87.75 |   87.03 | 74,151-152,384-424
----------------|---------|----------|---------|---------|--------------------
+---------------|---------|----------|---------|---------|-----------------------
+All files      |   85.27 |    74.73 |   85.93 |   86.87 |
+signaldesk.ts  |   85.27 |    74.73 |   85.93 |   86.87 | ...52,518-558,569-574
+---------------|---------|----------|---------|---------|-----------------------
 ```
 
 ## Build Verification
@@ -34,5 +34,5 @@ npm run build
 ```text
 vite v7.3.1 building client environment for production...
 ✓ 32 modules transformed.
-✓ built in 310ms
+✓ built in 314ms
 ```

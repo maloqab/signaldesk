@@ -3,6 +3,16 @@ export type ClaimType = 'opportunity' | 'risk' | 'assumption' | 'unknown'
 export type Confidence = 'high' | 'medium' | 'low'
 export type PacketRole = 'Coder' | 'Researcher' | 'Writer' | 'Notion'
 export type Horizon = '24h' | '7d' | '30d'
+export type DecisionStatus = 'accepted' | 'needs-review' | 'rejected'
+
+export type ScoreBreakdown = {
+  signalQuality: number
+  sourceReliability: number
+  recency: number
+  contradictionPenalty: number
+  total: number
+  rationale: string[]
+}
 
 export type SourceItem = {
   id: string
@@ -16,10 +26,12 @@ export type Claim = {
   type: ClaimType
   confidence: Confidence
   confidenceScore: number
+  scoreBreakdown: ScoreBreakdown
   sourceId: string
 }
 
 export type Decision = {
+  id: string
   title: string
   rationale: string
   impact: number
@@ -27,6 +39,17 @@ export type Decision = {
   urgency: number
   score: number
   horizon: Horizon
+  scoreBreakdown: ScoreBreakdown
+  governanceReasons: string[]
+  status: DecisionStatus
+  conflictSourceIds: string[]
+}
+
+export type ReviewerDecision = {
+  decisionId: string
+  status: DecisionStatus
+  notes: string
+  updatedAt: string
 }
 
 export type RoadmapItem = {
@@ -56,6 +79,7 @@ export type SavedSession = {
 }
 
 export const SESSION_KEY = 'signaldesk:sessions:v1'
+export const REVIEWER_KEY = 'signaldesk:reviewers:v1'
 
 const SIGNALS = {
   opportunity: ['launch', 'growth', 'demand', 'adoption', 'win', 'expand', 'retention', 'upsell', 'pipeline'],
@@ -64,6 +88,8 @@ const SIGNALS = {
   unknown: ['unknown', 'tbd', 'unclear', 'missing', 'need data', '?'],
   evidence: ['data', 'confirmed', 'published', 'survey', 'metric', 'evidence', 'reported'],
   weakSignal: ['maybe', 'possibly', 'guess', 'perhaps', 'rumor'],
+  recency: ['today', 'this week', 'current', 'latest', '2026', 'q1', 'q2', 'q3', 'q4'],
+  contradictions: ['however', 'but', 'except', 'contradict', 'conflict'],
 }
 
 export function safeUrl(raw: string) {
@@ -100,20 +126,31 @@ export function countMatches(raw: string, terms: string[]): number {
   return terms.reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0)
 }
 
+export function scoreBreakdown(raw: string, sourceType: SourceType): ScoreBreakdown {
+  const evidenceHits = countMatches(raw, SIGNALS.evidence)
+  const weakHits = countMatches(raw, SIGNALS.weakSignal)
+  const recencyHits = countMatches(raw, SIGNALS.recency)
+  const contradictionHits = countMatches(raw, SIGNALS.contradictions) + (raw.includes('?') ? 1 : 0)
+
+  const signalQuality = Math.max(8, Math.min(45, 18 + evidenceHits * 8 - weakHits * 6 + (raw.length > 90 ? 4 : 0)))
+  const sourceReliabilityBase: Record<SourceType, number> = { url: 20, document: 24, transcript: 17, note: 13 }
+  const sourceReliability = sourceReliabilityBase[sourceType]
+  const recency = Math.max(0, Math.min(18, recencyHits * 6 + (raw.includes('2025') || raw.includes('2026') ? 4 : 0)))
+  const contradictionPenalty = Math.max(0, Math.min(24, contradictionHits * 6))
+
+  const total = Math.max(8, Math.min(95, signalQuality + sourceReliability + recency - contradictionPenalty))
+  const rationale = [
+    `signal quality ${signalQuality} from evidence(${evidenceHits})/weak(${weakHits}) markers`,
+    `source reliability ${sourceReliability} for ${sourceType}`,
+    `recency ${recency} from recency markers(${recencyHits})`,
+    `contradiction penalty -${contradictionPenalty}`,
+  ]
+
+  return { signalQuality, sourceReliability, recency, contradictionPenalty, total, rationale }
+}
+
 export function scoreConfidence(raw: string, sourceType: SourceType): number {
-  let score = 44
-
-  if (sourceType === 'url') score += 8
-  if (sourceType === 'document') score += 10
-  if (sourceType === 'transcript') score += 4
-
-  score += countMatches(raw, SIGNALS.evidence) * 14
-  score -= countMatches(raw, SIGNALS.weakSignal) * 12
-
-  if (raw.length > 90) score += 6
-  if (raw.includes('?')) score -= 6
-
-  return Math.max(8, Math.min(95, score))
+  return scoreBreakdown(raw, sourceType).total
 }
 
 export function bucketConfidence(score: number): Confidence {
@@ -127,12 +164,13 @@ export function extractClaimsForSource(source: SourceItem): Claim[] {
   const claims: Claim[] = []
 
   const push = (type: ClaimType, phrase: string) => {
-    const confidenceScore = scoreConfidence(text, source.type)
+    const breakdown = scoreBreakdown(text, source.type)
     claims.push({
       type,
       text: `${phrase}: ${text.slice(0, 120)}`,
-      confidence: bucketConfidence(confidenceScore),
-      confidenceScore,
+      confidence: bucketConfidence(breakdown.total),
+      confidenceScore: breakdown.total,
+      scoreBreakdown: breakdown,
       sourceId: source.id,
     })
   }
@@ -164,20 +202,71 @@ export function averageConfidenceScore(claims: Claim[]): number {
   return claims.reduce((sum, claim) => sum + claim.confidenceScore, 0) / claims.length
 }
 
+function computeConflictSourceIds(claims: Claim[]): string[] {
+  const bySource = new Map<string, Set<ClaimType>>()
+  for (const claim of claims) {
+    const existing = bySource.get(claim.sourceId) ?? new Set<ClaimType>()
+    existing.add(claim.type)
+    bySource.set(claim.sourceId, existing)
+  }
+
+  const conflicts: string[] = []
+  bySource.forEach((types, sourceId) => {
+    if (types.has('opportunity') && types.has('risk')) conflicts.push(sourceId)
+  })
+  return conflicts
+}
+
+function decisionId(horizon: Horizon, index: number) {
+  return `d-${horizon}-${index + 1}`
+}
+
+function scoreDecisionBreakdown(decision: Omit<Decision, 'score' | 'id' | 'scoreBreakdown' | 'governanceReasons' | 'status' | 'conflictSourceIds'>, claims: Claim[]) {
+  const avg = averageConfidenceScore(claims)
+  const contradictionPenalty = computeConflictSourceIds(claims).length * 8
+  const signalQuality = Math.max(10, Math.min(40, Math.round(decision.impact * 3.2)))
+  const sourceReliability = Math.max(8, Math.min(30, Math.round(avg / 3)))
+  const recency = decision.horizon === '24h' ? 16 : decision.horizon === '7d' ? 10 : 6
+
+  const total = Math.max(8, Math.min(95, signalQuality + sourceReliability + recency - contradictionPenalty))
+  const rationale = [
+    `signal quality ${signalQuality} from impact ${decision.impact}`,
+    `source reliability ${sourceReliability} from avg claim confidence ${avg.toFixed(1)}`,
+    `recency ${recency} from horizon ${decision.horizon}`,
+    `contradiction penalty -${contradictionPenalty}`,
+  ]
+
+  return { signalQuality, sourceReliability, recency, contradictionPenalty, total, rationale } as ScoreBreakdown
+}
+
+function autoGovernanceStatus(score: number, conflicts: string[]): { status: DecisionStatus; reasons: string[] } {
+  const reasons: string[] = []
+  let status: DecisionStatus = 'accepted'
+
+  if (score < 46) {
+    status = 'needs-review'
+    reasons.push('low-confidence score requires reviewer approval')
+  }
+  if (conflicts.length > 0) {
+    status = 'needs-review'
+    reasons.push(`conflicting claims detected in sources: ${conflicts.join(', ')}`)
+  }
+
+  if (!reasons.length) reasons.push('passes deterministic scoring and conflict checks')
+
+  return { status, reasons }
+}
+
 export function buildDecisions(claims: Claim[]): Decision[] {
   const opportunities = claims.filter((c) => c.type === 'opportunity').length
   const risks = claims.filter((c) => c.type === 'risk').length
   const assumptions = claims.filter((c) => c.type === 'assumption').length
   const unknowns = claims.filter((c) => c.type === 'unknown').length
-  const confidenceMean = averageConfidenceScore(claims)
 
-  const confidenceBoost = confidenceMean >= 65 ? 1.2 : 0
-  const confidenceDrag = confidenceMean < 50 ? 1.0 : 0
-
-  const rows: Omit<Decision, 'score'>[] = [
+  const rows: Omit<Decision, 'score' | 'id' | 'scoreBreakdown' | 'governanceReasons' | 'status' | 'conflictSourceIds'>[] = [
     {
       title: 'Run one high-leverage experiment against the strongest upside signal',
-      rationale: `Anchors on ${opportunities} opportunity signals while confidence avg is ${confidenceMean.toFixed(0)}.`,
+      rationale: `Anchors on ${opportunities} opportunity signals.`,
       impact: Math.min(10, 5 + opportunities),
       effort: 4,
       urgency: 8,
@@ -201,9 +290,45 @@ export function buildDecisions(claims: Claim[]): Decision[] {
     },
   ]
 
+  const conflicts = computeConflictSourceIds(claims)
+
   return rows
-    .map((d) => ({ ...d, score: d.impact * 1.8 + d.urgency * 1.2 - d.effort + confidenceBoost - confidenceDrag }))
+    .map((decision, index) => {
+      const breakdown = scoreDecisionBreakdown(decision, claims)
+      const weightedScore = decision.impact * 1.8 + decision.urgency * 1.2 - decision.effort + breakdown.total / 50 - breakdown.contradictionPenalty / 10
+      const governance = autoGovernanceStatus(breakdown.total, conflicts)
+      return {
+        ...decision,
+        id: decisionId(decision.horizon, index),
+        score: weightedScore,
+        scoreBreakdown: breakdown,
+        status: governance.status,
+        governanceReasons: governance.reasons,
+        conflictSourceIds: conflicts,
+      }
+    })
     .sort((a, b) => b.score - a.score)
+}
+
+export function mergeReviewerDecisions(decisions: Decision[], reviewerMap: Record<string, ReviewerDecision>) {
+  return decisions.map((decision) => {
+    const review = reviewerMap[decision.id]
+    if (!review) return decision
+
+    const reasons = [...decision.governanceReasons]
+    reasons.push(`reviewer set status to ${review.status}`)
+    if (review.notes.trim()) reasons.push(`reviewer note: ${review.notes.trim()}`)
+
+    return {
+      ...decision,
+      status: review.status,
+      governanceReasons: reasons,
+    }
+  })
+}
+
+export function hasPendingReview(decisions: Decision[]) {
+  return decisions.some((decision) => decision.status === 'needs-review')
 }
 
 export function buildRoadmap(decisions: Decision[]): RoadmapItem[] {
@@ -249,7 +374,7 @@ export function buildPackets(decisions: Decision[], claims: Claim[]): Packet[] {
     {
       role: 'Coder',
       objective: top ? top.title : 'Build the highest-impact execution slice.',
-      context: `Top decision score: ${top?.score.toFixed(1) ?? 'n/a'}.`,
+      context: `Top decision score: ${top?.score.toFixed(1) ?? 'n/a'} (${top?.status ?? 'n/a'}).`,
       tasks: [
         'Translate decision into an implementation plan with milestones (today/this week/this month).',
         'Implement the minimum production-usable slice with instrumentation hooks.',
@@ -336,6 +461,7 @@ export function toMarkdown(
   decisions: Decision[],
   roadmap: RoadmapItem[],
   packets: Packet[],
+  reviewerTrail: ReviewerDecision[],
 ): string {
   const lines: string[] = [
     `# ${title}`,
@@ -346,13 +472,21 @@ export function toMarkdown(
     ...sources.map((source) => `- [${source.type.toUpperCase()}] ${source.raw}`),
     '',
     '## Intelligence Brief',
-    ...claims.map((claim) => `- (${claim.confidence}/${claim.confidenceScore}) ${claim.type.toUpperCase()}: ${claim.text}`),
+    ...claims.map(
+      (claim) =>
+        `- (${claim.confidence}/${claim.confidenceScore}) ${claim.type.toUpperCase()}: ${claim.text} | why: ${claim.scoreBreakdown.rationale.join('; ')}`,
+    ),
     '',
     '## Ranked Decisions',
     ...decisions.map(
       (decision) =>
-        `- ${decision.title} | score:${decision.score.toFixed(1)} impact:${decision.impact} effort:${decision.effort} urgency:${decision.urgency} | ${decision.rationale}`,
+        `- ${decision.title} | status:${decision.status} | score:${decision.score.toFixed(1)} impact:${decision.impact} effort:${decision.effort} urgency:${decision.urgency} | why: ${decision.scoreBreakdown.rationale.join('; ')} | governance: ${decision.governanceReasons.join(' | ')}`,
     ),
+    '',
+    '## Reviewer Trail',
+    ...(reviewerTrail.length
+      ? reviewerTrail.map((item) => `- ${item.decisionId} → ${item.status} @ ${item.updatedAt}${item.notes ? ` | notes: ${item.notes}` : ''}`)
+      : ['- No reviewer actions recorded.']),
     '',
     '## 24h / 7d / 30d Roadmap',
     ...roadmap.map((item) => `- [${item.horizon}] ${item.action} | owner:${item.owner} | success:${item.successMetric}`),
@@ -429,4 +563,24 @@ export function saveSessionToStorage(session: SavedSession, existing: SavedSessi
   const merged = [session, ...existing].slice(0, 20)
   storage.setItem(SESSION_KEY, JSON.stringify(merged))
   return merged
+}
+
+export function loadReviewerDecisions(storage: Storage = sessionStorage): Record<string, ReviewerDecision> {
+  try {
+    const raw = storage.getItem(REVIEWER_KEY)
+    if (!raw) return {}
+    return JSON.parse(raw) as Record<string, ReviewerDecision>
+  } catch {
+    return {}
+  }
+}
+
+export function saveReviewerDecision(entry: ReviewerDecision, current: Record<string, ReviewerDecision>, storage: Storage = sessionStorage) {
+  const next = { ...current, [entry.decisionId]: entry }
+  storage.setItem(REVIEWER_KEY, JSON.stringify(next))
+  return next
+}
+
+export function reviewerTrail(reviewerMap: Record<string, ReviewerDecision>) {
+  return Object.values(reviewerMap).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
 }
